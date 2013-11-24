@@ -2,7 +2,7 @@ from os import system
 from os import path
 from glob import glob
 import numpy as np
-from scipy import sparse
+from scipy.io import wavfile
 
 
 def ReadAndCanonicalizeLyricsData(data_path):
@@ -55,7 +55,7 @@ def BayesianWords(unigram_counts, bigram_counts, n_words):
     bigram_pdfs[w1] = (
         w2strs,
         np.array([np.sum(w2pdf[:n]) for n in range(len(w2strs))]))
-    print '%d bigrams for %s' % (len(w2strs), w1)
+    #print '%d bigrams for %s' % (len(w2strs), w1)
 
   first_word_index = np.searchsorted(prior_pdf, np.random.random_sample())
   words = [unigrams[min(len(unigrams)-1, first_word_index)]]
@@ -68,8 +68,20 @@ def BayesianWords(unigram_counts, bigram_counts, n_words):
       # Pick from the prior.
       idx = np.searchsorted(prior_pdf, np.random.random_sample())
       words.append(unigrams[min(len(unigrams)-1, idx)])
-  print words
   return words
 
-def Speak(words, s=175, p=50):
-  system('bin\espeak -v +m4 -s %d -p %d "%s"' % (s, p, ' '.join(words)))
+
+def Speak(words, wavfile, speed=80, pitch=50):
+  system('bin\espeak -w %s -v +m4 -s %d -p %d "%s"' % (
+      wavfile, speed, pitch, ' '.join(words)))
+
+
+def GetRawWave(wavfile):
+  w = wave.open(wavfile, 'rb')
+  nchannels, sampwidth, framerate, nframes, comptype, _ = w.getparams()
+  assert (
+      (nchannels, sampwidth, framerate, comptype)
+      == (1, 2, 22050, 'NONE'))
+  frames = w.readframes(nframes)
+  w.close()
+  return frames
