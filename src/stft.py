@@ -5,7 +5,7 @@ import numpy as np
 import scipy.io.wavfile
 import scipy.signal
 from scipy.signal import hamming
-from numpy.fft import rfftfreq, rfft, irfft, fftshift
+from numpy.fft import rfftfreq, rfft, irfft, fftshift, ifftshift
 import plot
 
 
@@ -27,7 +27,7 @@ def ConvertAndWrite(wavform, rate, wavfile):
 
 def STFT(s, nfft=1024, nskip=512):
   "I'm gonna put it on. Anywhere, anytime. I'm not boasting. I'm just toasting."
-  h = sinc(nfft)
+  h = hamming(nfft)
   return [
       rfft(h * zpad(nfft, s[w_0 : min(s.size, w_0+nfft)]))
       for w_0 in xrange(0, s.size, nskip)]
@@ -38,7 +38,7 @@ def STIFT(stft_windows, nfft, nskip):
   r = np.zeros(nskip * (len(stft_windows) - 1) + nfft)
   h = hamming(nfft)
   for w, w_0 in zip(stft_windows, xrange(0, r.size, nskip)):
-    r[w_0 : w_0+nfft] += irfft(w, nfft) / h
+    r[w_0 : w_0+nfft] += h * irfft(w, nfft)
   return r
 
 
@@ -70,30 +70,32 @@ def Resample(S, ns, nr, p, rate):
   w_s = rfftfreq(ns, 1.0/rate)
   d_s  = 1.*rate / ns
   w_r = rfftfreq(nr, 1.0/rate)
-  d_r = 1.*rate / nr 
-  # A linear interpolation of the two nearest frequencies, via the pitch
-  # transformation p. I.e.
-  # R(w) = a_f * S(floor(p * w / d_s) * d_s)
-  #      + a_c * S(ceil(p * w / d_s) * d_s )
-  i_wfloor = np.floor(w_r/p / d_s).astype(np.int)
-  i_wceil = np.ceil(w_r/p / d_s).astype(np.int)
-  w_floor = w_s[i_wfloor]
-  w_ceil = w_s[i_wceil]
-  a_floor0, a_ceil0 = (w_r/p - w_floor), (w_ceil - w_r/p)
-  assert all(a_floor0 >= 0), a_floor0[a_floor0 < 0]
-  assert all(a_ceil0 >= 0), a_ceil0[a_ceil0 < 0]
-  a_floor = a_floor0 / (a_floor0 + a_ceil0 + 1e-6)
-  a_ceil = a_ceil0 / (a_floor0 + a_ceil0 + 1e-6)
-
-  absS = np.abs(S)
-  angleS = np.angle(S)
-
-  absR = a_floor * absS[i_wfloor] + a_ceil * absS[i_wceil]
-  angleR = a_floor * angleS[i_wfloor] + a_ceil * angleS[i_wceil]
-
-  R = absR# * np.exp(1j * angleR)
-
-  assert R.size == w_r.size, (R.size, S.size, ns, nr)
+  d_r = 1.*rate / nr
+  i_wfloor = (np.floor(w_r[1:]/p / d_s) - 1).astype(np.int)
+  i_wceil = (np.ceil(w_r[1:]/p / d_s) - 1).astype(np.int)
+  
+  w_floor = w_s[1+i_wfloor]
+  w_ceil = w_s[1+i_wceil]
+  a_floor0, a_ceil0 = (w_r[1:]/p - w_floor), (w_ceil - w_r[1:]/p)
+  # Some freqs may be exact matches, e.g. if nr == 2*ns, every other one.
+  exact = (a_floor0 == 0.0) & (a_ceil0 == 0.0)
+  # Ignore the DC Component and any exact matches in the interpolation.
+  R = np.hstack((np.array([S[0]]), np.zeros(w_r.size-1)))
+  R[1:][exact] = S[1+i_wfloor[exact]]
+  # The rest: linear interpolation of the two nearest frequencies in the sample.
+  intrp = ~exact
+  i_fl, i_cl = i_wfloor[intrp], i_wceil[intrp]
+  fl0, cl0 = a_floor0[intrp], a_ceil0[intrp]
+  fl = fl0 / (fl0 + cl0)
+  cl = cl0 / (fl0 + cl0)
+  # Interpolate mag and phase separately.
+  absS = np.abs(S[1:])
+  angS = np.angle(S[1:])
+  absR = fl * absS[i_fl] + cl * absS[i_cl]
+  angR = fl * angS[i_fl] + cl * angS[i_cl]
+  R[1:][intrp] = absR * np.exp(1j * angR)
+  
+  assert R.size == w_r.size, (R.size, w_r.size, S.size, ns, nr)
   return R
 
 
@@ -110,15 +112,20 @@ def testKickTires():
   ConvertAndWrite(r, f, os.path.join('testout', 'KickTires.wav'))
 
 
+def PlotPitches(S, rate, dirpath='testout', name='pitches', title=''):
+  freqs = rfftfreq(S.size, 1.0/rate)
+  plot.LinePlotHtml(
+      dirpath, name, title,
+      [['freq', name]] + [[f, Sk] for f, Sk in zip(freqs, S)],
+      logx=True, xticks_at_A=True)
+
+
 def testPlotPitches():
   for name in ['foo_s80_p50', 'foo_s80_p75', 'foo_s80_p95']:
     s, rate = ReadAndConvert(os.path.join('testdata', '%s.wav' % name))
-    freqs, S = rfftfreq(s.size, 1.0/rate), np.log(np.abs(rfft(s)))
-    plot.LinePlotHtml(
-        'testout', 'testPitch_%s' % name,
-        'Spectrum of %s' % name,
-        [['freq', name]] + [[f, Sk] for f, Sk in zip(freqs, S)],
-        logx=True, xticks_at_A=True)
+    S = np.abs(rfft(s))
+    PlotPitches(S, rate, name='testPlotPitches_%s' % name,
+        title='Spectrum of %s' % name)
 
 
 def testResample():
@@ -132,21 +139,21 @@ def testResample():
   Rws = []
   for nw, Sw in enumerate(Sws):
     freqs = rfftfreq(nfft, 1.0/rate)
-    plot.LinePlotHtml(
-        'testout', 'testResampleFrame%dIn' % nw,
-        'Spectrum of input frame %d' % nw,
-        [['freq', str(nw)]] + [[f, Swk] for f, Swk in zip(freqs, np.abs(Sw))],
-        logx=True, xticks_at_A=True)
-    #p = target_pitch / EstimatePitch(Sw, rate)
-    p=1.0
-    Rw = Resample(Sw, nfft, nrfft, p, rate)
-    freqs = rfftfreq(nrfft, 1.0/rate)
-    plot.LinePlotHtml(
-        'testout', 'testResampleFrame%dOut' % nw,
-        'Spectrum of ouput frame %d' % nw,
-        [['freq', str(nw)]] + [[f, Rwk] for f, Rwk in zip(freqs, np.abs(Rw))],
-        logx=True, xticks_at_A=True)
+    epitch = EstimatePitch(Sw, rate)
+    PlotPitches(np.abs(Sw), rate, name='testResampleFrame%dInMag' % nw,
+                title='Spectrum of input frame %d (%f)' % (nw, epitch))
+    PlotPitches(np.angle(Sw), rate, name='testResampleFrame%dInPhase' % nw,
+                title='Phase of input frame %d' % nw)
+
+    Rw = Resample(Sw, nfft, nrfft, 1.0, rate)
+
     Rws.append(Rw)
+
+    erpitch = EstimatePitch(Rw, rate)
+    PlotPitches(np.abs(Rw), rate, name='testResampleFrame%dOutMag' % nw,
+                title='Spectrum of output frame %d (%f)' % (nw, erpitch))
+    PlotPitches(np.angle(Rw), rate, name='testResampleFrame%dOutPhase' % nw,
+                title='Phase of output frame %d' % nw)
   ConvertAndWrite(
       STIFT(Rws, nrfft, nrskip), rate,
       os.path.join('testout', 'testResample.wav'))
