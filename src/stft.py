@@ -1,5 +1,6 @@
 "Shut the fuck transform. Rasta don't work for no CIA."
 import os
+import math
 from functools import partial
 import numpy as np
 import scipy.io.wavfile
@@ -29,7 +30,7 @@ def STFT(s, nfft=1024, nskip=512):
   "I'm gonna put it on. Anywhere, anytime. I'm not boasting. I'm just toasting."
   h = hamming(nfft)
   return [
-      rfft(h * zpad(nfft, s[w_0 : min(s.size, w_0+nfft)]))
+      rfft(zpad(nfft, s[w_0 : min(s.size, w_0+nfft)]))
       for w_0 in xrange(0, s.size, nskip)]
 
 
@@ -38,7 +39,7 @@ def STIFT(stft_windows, nfft, nskip):
   r = np.zeros(nskip * (len(stft_windows) - 1) + nfft)
   h = hamming(nfft)
   for w, w_0 in zip(stft_windows, xrange(0, r.size, nskip)):
-    r[w_0 : w_0+nfft] += h * irfft(w, nfft)
+    r[w_0 : w_0+nfft] += irfft(w, nfft) * h
   return r
 
 
@@ -82,19 +83,17 @@ def Resample(S, ns, nr, p, rate):
   # Ignore the DC Component and any exact matches in the interpolation.
   R = np.hstack((np.array([S[0]]), np.zeros(w_r.size-1)))
   R[1:][exact] = S[1+i_wfloor[exact]]
-  # The rest: linear interpolation of the two nearest frequencies in the sample.
+  # The rest: interpolate mag/phase from the nearest sampled frequencies.
+  absS, angS = np.abs(S[1:]), np.angle(S[1:])
   intrp = ~exact
+  # Basic floor/ceil linear interpolation ...
   i_fl, i_cl = i_wfloor[intrp], i_wceil[intrp]
-  fl0, cl0 = a_floor0[intrp], a_ceil0[intrp]
-  fl = fl0 / (fl0 + cl0)
-  cl = cl0 / (fl0 + cl0)
-  # Interpolate mag and phase separately.
-  absS = np.abs(S[1:])
-  angS = np.angle(S[1:])
-  absR = fl * absS[i_fl] + cl * absS[i_cl]
-  angR = fl * angS[i_fl] + cl * angS[i_cl]
+  afl0, acl0 = a_floor0[intrp], a_ceil0[intrp]
+  afl = 1.0 - afl0 / (afl0 + acl0)
+  acl = 1.0 - acl0 / (afl0 + acl0)
+  absR = afl * absS[i_fl] + acl * absS[i_cl]
+  angR = afl * angS[i_fl] + acl * angS[i_cl]
   R[1:][intrp] = absR * np.exp(1j * angR)
-  
   assert R.size == w_r.size, (R.size, w_r.size, S.size, ns, nr)
   return R
 
@@ -130,22 +129,32 @@ def testPlotPitches():
 
 def testResample():
   s, rate = ReadAndConvert(os.path.join('testdata', 'foo_s80_p95.wav'))
-  s = s[1024 : 15*1024]
+  s = scipy.signal.resample(s, 4*len(s))
+  rate = 4*rate
+  ConvertAndWrite(s, rate, os.path.join('testout', 'foo_resampled.wav'))
+  s = s[0 : 15*2048]
   nfft, nskip = 1024, 512
   Sws = STFT(s, nfft, nskip)
   nrfft, nrskip = 4096, 2048
-  target_pitch = 880.0 # Try to sing an A.
+  target_pitch = 880. #440.0 * 2 ** (7.0 / 12)
 
   Rws = []
   for nw, Sw in enumerate(Sws):
     freqs = rfftfreq(nfft, 1.0/rate)
     epitch = EstimatePitch(Sw, rate)
+
+    if epitch == 0.0: 
+      p = 1
+    else:
+      p = target_pitch / epitch
+      print '%d: epitch=%f p=%f' % (nw, epitch, p)
+
     PlotPitches(np.abs(Sw), rate, name='testResampleFrame%dInMag' % nw,
                 title='Spectrum of input frame %d (%f)' % (nw, epitch))
     PlotPitches(np.angle(Sw), rate, name='testResampleFrame%dInPhase' % nw,
                 title='Phase of input frame %d' % nw)
 
-    Rw = Resample(Sw, nfft, nrfft, 1.0, rate)
+    Rw = Resample(Sw, nfft, nrfft, p, rate)
 
     Rws.append(Rw)
 
@@ -154,8 +163,12 @@ def testResample():
                 title='Spectrum of output frame %d (%f)' % (nw, erpitch))
     PlotPitches(np.angle(Rw), rate, name='testResampleFrame%dOutPhase' % nw,
                 title='Phase of output frame %d' % nw)
+  r = STIFT(Rws, nrfft, nrskip)
+  r = scipy.signal.resample(r, int(np.floor(r.size/2)))
+  rate = rate/2
+
   ConvertAndWrite(
-      STIFT(Rws, nrfft, nrskip), rate,
+      r, rate,
       os.path.join('testout', 'testResample.wav'))
 
 
